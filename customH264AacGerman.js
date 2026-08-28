@@ -5,7 +5,7 @@
  *
  * customH264AacGerman
  *
- * Version 1.9.1
+ * Version 1.9.2
  *
  * Ziel:
  * - HEVC / AV1 / MPEG-4 -> H.264
@@ -20,21 +20,9 @@
  * - Datenstreams werden entfernt
  * - Metadaten und Kapitel können übernommen werden
  *
- * WICHTIG:
- *
- * Tdarr übergibt den sichtbaren Node-Namen bei diesem Plugin
- * nicht zuverlässig in otherArguments.
- *
- * Deshalb wird in 1.9.1 der von Tdarr bereitgestellte
- * nodeHardwareType verwendet.
- *
- * Beispiel:
- *
- * Keller-Node -> nodeHardwareType = qsv
- * Windows-AMD -> nodeHardwareType = amf
- *
- * Die Einstellung "Node Hardware Mapping" bleibt bestehen,
- * damit die Zuordnung zentral konfiguriert werden kann.
+ * FIX v1.9.2:
+ * Liest den Node-Namen aus otherArguments aus und gleicht ihn primär mit
+ * "Node Hardware Mapping" ab. Falls nicht vorhanden, wird nodeHardwareType ausgewertet.
  */
 
 const details = () => ({
@@ -54,7 +42,7 @@ const details = () => ({
     'HDR wird optional nach SDR BT.709 konvertiert. ' +
     'Deutsche Audiospuren werden nach AAC konvertiert.',
 
-  Version: '1.9.1',
+  Version: '1.9.2',
 
   Tags:
     'h264,qsv,amf,aac,german,hdr,directplay,node-mapping',
@@ -101,8 +89,7 @@ const details = () => ({
       tooltip:
         'Zuordnung der Tdarr-Nodes zu Hardware. ' +
         'Format: NodeName=qsv,NodeName=amf. ' +
-        'Die Einstellung dient zur Dokumentation und Konfiguration. ' +
-        'Die tatsächliche Hardware wird über Tdarr nodeHardwareType erkannt.',
+        'Node-Namen werden primär mit dieser Liste abgeglichen.',
     },
 
 
@@ -673,122 +660,74 @@ const plugin = (
 
 
   // ==============================================================
-  // NODE HARDWARE TYPE
+  // NODE & HARDWARE ERKENNUNG
   // ==============================================================
 
-  /*
-   * DAS ist der entscheidende Unterschied zu 1.9.0.
-   *
-   * Der sichtbare Tdarr Node-Name steht nicht zuverlässig
-   * in otherArguments.
-   *
-   * Tdarr stellt jedoch nodeHardwareType bereit.
-   */
+  // 1. Node Name ermitteln
+  const currentNodeName = String(
+    (otherArguments && (
+      otherArguments.nodeName ||
+      (otherArguments.nodeData && otherArguments.nodeData.nodeName) ||
+      otherArguments.nodeID
+    )) || ''
+  ).trim();
 
-  const rawNodeHardwareType =
-    String(
-      otherArguments &&
-      otherArguments.nodeHardwareType
-        ? otherArguments.nodeHardwareType
-        : ''
-    );
+  // 2. Direct nodeHardwareType von Tdarr auslesen
+  const rawNodeHardwareType = String(
+    (otherArguments && (
+      otherArguments.nodeHardwareType ||
+      (otherArguments.nodeData && otherArguments.nodeData.nodeHardwareType)
+    )) || ''
+  ).trim();
 
+  const mapping = parseHardwareMapping(nodeHardwareMapping);
 
-  const nodeHardwareType =
-    normalizeHardwareType(
-      rawNodeHardwareType
-    );
+  let detectedHardware = '';
+  let mappingDescription = '';
 
+  // 3. Erstes Abgleichen über das Node-Mapping
+  if (currentNodeName && mapping[currentNodeName.toLowerCase()]) {
+    detectedHardware = normalizeHardwareType(mapping[currentNodeName.toLowerCase()]);
+    mappingDescription = `Match über Node-Name Mapping (${currentNodeName} -> ${detectedHardware})`;
+  }
 
-  const mapping =
-    parseHardwareMapping(
-      nodeHardwareMapping
-    );
-
+  // 4. Fallback auf direkt von Tdarr bereitgestellten nodeHardwareType
+  if (!detectedHardware && rawNodeHardwareType) {
+    detectedHardware = normalizeHardwareType(rawNodeHardwareType);
+    mappingDescription = `Match über Tdarr nodeHardwareType (${rawNodeHardwareType})`;
+  }
 
   // ==============================================================
-  // HARDWARE AUSWÄHLEN
+  // HARDWARE ENCODER ZUWEISEN
   // ==============================================================
 
-  let encoder =
-    '';
+  let encoder = '';
+  let hardwareVendor = '';
 
-
-  let hardwareVendor =
-    '';
-
-
-  let mappingDescription =
-    '';
-
-
-  /*
-   * Primär wird nodeHardwareType verwendet.
-   */
-
-  if (
-    nodeHardwareType === 'qsv'
-  ) {
-
-    encoder =
-      'h264_qsv';
-
-    hardwareVendor =
-      'Intel QSV';
-
-    mappingDescription =
-      'Tdarr nodeHardwareType=qsv';
-
-  } else if (
-    nodeHardwareType === 'amf'
-  ) {
-
-    encoder =
-      'h264_amf';
-
-    hardwareVendor =
-      'AMD AMF';
-
-    mappingDescription =
-      'Tdarr nodeHardwareType=amf';
-
-  } else if (
-    nodeHardwareType === 'nvenc'
-  ) {
-
-    encoder =
-      'h264_nvenc';
-
-    hardwareVendor =
-      'NVIDIA NVENC';
-
-    mappingDescription =
-      'Tdarr nodeHardwareType=nvenc';
-
+  if (detectedHardware === 'qsv') {
+    encoder = 'h264_qsv';
+    hardwareVendor = 'Intel QSV';
+  } else if (detectedHardware === 'amf') {
+    encoder = 'h264_amf';
+    hardwareVendor = 'AMD AMF';
+  } else if (detectedHardware === 'nvenc') {
+    encoder = 'h264_nvenc';
+    hardwareVendor = 'NVIDIA NVENC';
   }
 
 
   // ==============================================================
-  // UNSICHERES HARDWARE MAPPING
+  // SICHERHEITSPRÜFUNG
   // ==============================================================
-
-  /*
-   * Kein Fallback auf QSV!
-   *
-   * Das ist absichtlich so.
-   *
-   * Wenn Tdarr beispielsweise einen neuen Node-Typ liefert,
-   * darf das Plugin nicht versehentlich auf dem falschen
-   * Encoder laufen.
-   */
 
   if (!encoder) {
 
     response.infoLog =
-      '========== CUSTOM H264 AAC 1.9.1 ==========\n'
+      '========== CUSTOM H264 AAC 1.9.2 ==========\n'
       + 'Node Hardware Type konnte nicht eindeutig bestimmt werden.\n'
+      + `Erkannter Node-Name: ${currentNodeName || 'unknown'}\n`
       + `Tdarr nodeHardwareType: ${rawNodeHardwareType || 'unknown'}\n`
-      + `Normalisiert: ${nodeHardwareType || 'unknown'}\n`
+      + `Normalisierter Hardware-Typ: ${detectedHardware || 'unknown'}\n`
       + `Node Hardware Mapping: ${nodeHardwareMapping}\n`
       + '\n'
       + 'Unterstützt werden:\n'
@@ -798,8 +737,7 @@ const plugin = (
       + '\n'
       + 'Datei wird aus Sicherheitsgründen übersprungen.\n';
 
-    response.processFile =
-      false;
+    response.processFile = false;
 
     return response;
 
@@ -1565,7 +1503,11 @@ const plugin = (
   // ==============================================================
 
   let info =
-    '========== CUSTOM H264 AAC 1.9.1 ==========\n';
+    '========== CUSTOM H264 AAC 1.9.2 ==========\n';
+
+
+  info +=
+    `Node Name: ${currentNodeName || 'unknown'}\n`;
 
 
   info +=
