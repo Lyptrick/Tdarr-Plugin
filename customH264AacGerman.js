@@ -1,14 +1,15 @@
+```javascript
 module.exports.details = function details() {
   return {
     id: 'customH264AacGerman',
     Stage: 'Pre-processing',
-    Name: 'HEVC/AV1/MPEG-4/HDR zu H.264 AAC German (QSV)',
+    Name: 'HEVC/AV1/MPEG-4/HDR zu H.264 AAC German (QSV/AMF)',
     Type: 'Video',
     Operation: 'Transcode',
     Description:
-      'Erzeugt eine möglichst Jellyfin-kompatible H.264-8-bit-SDR-Datei. Ausgewählte Video-Codecs werden nach H.264 QSV konvertiert. HDR kann automatisch nach SDR getonemapped werden. Deutsche Audiospuren werden zu AAC konvertiert.',
-    Version: '1.7.0',
-    Tags: 'qsv,h264,aac,german,hdr,sdr',
+      'Erzeugt eine möglichst Jellyfin-kompatible H.264-8-bit-SDR-Datei. Ausgewählte Video-Codecs werden nach H.264 konvertiert. Intel QSV und AMD AMF werden automatisch anhand des Tdarr Node-Hardwaretyps verwendet. HDR kann automatisch nach SDR getonemapped werden. Deutsche Audiospuren werden bei inkompatiblen Codecs zu AAC konvertiert, vorhandenes AAC wird kopiert.',
+    Version: '1.8.0',
+    Tags: 'qsv,amf,h264,aac,german,hdr,sdr',
     Inputs: [
       {
         name: 'Target Video Codecs',
@@ -40,7 +41,7 @@ module.exports.details = function details() {
         defaultValue: 18,
         inputUI: { type: 'text' },
         tooltip:
-          'QSV Qualität. Niedriger = bessere Qualität und größere Datei. Empfohlen: 18-23.',
+          'Qualitätswert für Intel QSV. Niedriger = bessere Qualität und größere Datei. Empfohlen: 18-23.',
       },
 
       {
@@ -53,12 +54,21 @@ module.exports.details = function details() {
       },
 
       {
+        name: 'AMF Quality',
+        type: 'number',
+        defaultValue: 20,
+        inputUI: { type: 'text' },
+        tooltip:
+          'Qualitätswert für AMD AMF. Niedriger = bessere Qualität und größere Datei. Empfohlen: 18-23.',
+      },
+
+      {
         name: 'AAC Bitrate',
         type: 'string',
         defaultValue: '192k',
         inputUI: { type: 'text' },
         tooltip:
-          'AAC Bitrate, z.B. 160k, 192k oder 256k.',
+          'AAC Bitrate für Audiospuren, die nicht bereits AAC sind. Beispiele: 160k, 192k oder 256k.',
       },
 
       {
@@ -181,6 +191,11 @@ module.exports.plugin = function plugin(
   ).trim();
 
 
+  const amfQuality = Number(
+    inputs['AMF Quality'] || 20
+  );
+
+
   const aacBitrate = String(
     inputs['AAC Bitrate'] || '192k'
   ).trim();
@@ -228,6 +243,51 @@ module.exports.plugin = function plugin(
     String(
       inputs['Copy Chapters']
     ) !== 'false';
+
+
+  // ============================================================
+  // NODE HARDWARE ERKENNEN
+  // ============================================================
+
+  /*
+   * Tdarr stellt den Hardware-Typ des Nodes
+   * über otherArguments.nodeHardwareType bereit.
+   *
+   * Erwartete Werte:
+   *
+   * qsv -> Intel Quick Sync
+   * amf -> AMD AMF
+   *
+   * Andere / unbekannte Werte werden NICHT
+   * automatisch als Hardware-Encoder verwendet.
+   */
+
+  const nodeHardwareType =
+    String(
+      otherArguments &&
+      otherArguments.nodeHardwareType
+        ? otherArguments.nodeHardwareType
+        : ''
+    )
+      .trim()
+      .toLowerCase();
+
+
+  let encoder = '';
+  let encoderName = 'UNKNOWN';
+
+
+  if (
+    nodeHardwareType === 'qsv'
+  ) {
+    encoder = 'h264_qsv';
+    encoderName = 'Intel QSV';
+  } else if (
+    nodeHardwareType === 'amf'
+  ) {
+    encoder = 'h264_amf';
+    encoderName = 'AMD AMF';
+  }
 
 
   // ============================================================
@@ -528,22 +588,6 @@ module.exports.plugin = function plugin(
     'copy';
 
 
-  /*
-   * H.264:
-   *
-   * SDR:
-   *   Video kann direkt kopiert werden.
-   *
-   * HDR + HDR->SDR:
-   *   Video muss getonemapped und
-   *   anschließend als H.264 encodiert werden.
-   *
-   * Andere Codecs:
-   *   Nur wenn in Target Video Codecs
-   *   enthalten -> H.264 Encoding.
-   */
-
-
   if (
     videoCodec === 'h264'
   ) {
@@ -579,35 +623,25 @@ module.exports.plugin = function plugin(
 
 
   // ============================================================
-  // PRÜFEN, OB ÜBERHAUPT ETWAS ZU TUN IST
+  // HARDWARE ENCODER PRÜFEN
   // ============================================================
 
   /*
-   * Wenn H.264 SDR bereits vorhanden ist,
-   * Audio bereits AAC ist und keine
-   * Subtitle-Änderung notwendig ist,
-   * muss die Datei nicht verarbeitet werden.
+   * Nur erforderlich, wenn tatsächlich
+   * ein Video-Encoding durchgeführt wird.
    *
-   * Da der Flow aber nur ausgewählte
-   * Dateien erreicht, können wir bei
-   * vorhandenen Untertiteln nicht ohne
-   * Weiteres feststellen, ob sie bereits
-   * dem gewünschten Mode entsprechen.
-   *
-   * Deshalb wird bei H.264 SDR mit
-   * vorhandenen Untertiteln weitergemappt.
+   * Ein H.264 SDR Video kann weiterhin
+   * ohne Hardware-Encoder kopiert werden.
    */
 
-
   if (
-    videoCodec === 'h264' &&
-    !needsHDRConversion &&
-    !audioNeedsProcessing &&
-    subtitleMode === 'Keep All' &&
-    !removeData
+    videoNeedsEncoding &&
+    !encoder
   ) {
     response.infoLog =
-      'H.264 SDR, deutsche Audiospur bereits AAC und keine Stream-Änderung erforderlich. Datei wird übersprungen.';
+      'Kein unterstützter Hardware-Encoder erkannt. ' +
+      `Tdarr nodeHardwareType="${nodeHardwareType || 'unknown'}". ` +
+      'Unterstützt werden aktuell "qsv" und "amf". Datei wird übersprungen.';
     return response;
   }
 
@@ -624,13 +658,11 @@ module.exports.plugin = function plugin(
   // ============================================================
 
   /*
-   * WICHTIG:
-   *
    * Es wird bewusst nur EIN Videostream
    * gemappt.
    *
    * Dadurch ist H.264 garantiert
-   * Video-Stream 0 der Ausgabedatei.
+   * Video-Stream 0 der Ausgabe.
    */
 
   outputArgs.push(
@@ -648,20 +680,58 @@ module.exports.plugin = function plugin(
   ) {
     outputArgs.push(
       '-c:v',
-      'h264_qsv'
+      encoder
     );
 
 
-    outputArgs.push(
-      '-global_quality',
-      String(qsvQuality)
-    );
+    if (
+      nodeHardwareType === 'qsv'
+    ) {
+      outputArgs.push(
+        '-global_quality',
+        String(qsvQuality)
+      );
 
 
-    outputArgs.push(
-      '-preset',
-      qsvPreset
-    );
+      outputArgs.push(
+        '-preset',
+        qsvPreset
+      );
+    }
+
+
+    if (
+      nodeHardwareType === 'amf'
+    ) {
+      outputArgs.push(
+        '-quality',
+        'quality'
+      );
+
+
+      outputArgs.push(
+        '-rc',
+        'cqp'
+      );
+
+
+      outputArgs.push(
+        '-qp_i',
+        String(amfQuality)
+      );
+
+
+      outputArgs.push(
+        '-qp_p',
+        String(amfQuality)
+      );
+
+
+      outputArgs.push(
+        '-qp_b',
+        String(amfQuality)
+      );
+    }
 
 
     // ========================================================
@@ -671,44 +741,17 @@ module.exports.plugin = function plugin(
     if (
       needsHDRConversion
     ) {
-      /*
-       * HDR -> SDR:
-       *
-       * 10-bit HDR
-       *      ↓
-       * zscale linear
-       *      ↓
-       * tonemap
-       *      ↓
-       * BT.709
-       *      ↓
-       * NV12 / 8-bit
-       *
-       * hable liefert einen guten
-       * allgemeinen Film-Look.
-       */
-
       outputArgs.push(
         '-vf',
         'zscale=t=linear:npl=100,tonemap=tonemap=hable:desat=0,zscale=primaries=bt709:transfer=bt709:matrix=bt709,format=nv12'
       );
     } else {
-      /*
-       * SDR bzw. normales
-       * Codec-Transcoding.
-       */
-
       outputArgs.push(
         '-vf',
         'format=nv12'
       );
     }
   } else {
-    /*
-     * Bereits vorhandenes H.264 SDR:
-     * Video wird NICHT neu encodiert.
-     */
-
     outputArgs.push(
       '-c:v',
       'copy'
@@ -727,6 +770,12 @@ module.exports.plugin = function plugin(
     (audioStream, idx) => {
       const audioIndex =
         audioStream.index;
+
+
+      const audioCodec =
+        String(
+          audioStream.codec_name || ''
+        ).toLowerCase();
 
 
       const originalChannels =
@@ -748,41 +797,76 @@ module.exports.plugin = function plugin(
       );
 
 
-      outputArgs.push(
-        `-c:a:${idx}`,
-        'aac'
-      );
+      /*
+       * AAC wird NICHT erneut encodiert.
+       *
+       * Das verhindert den zuvor beobachteten
+       * AAC -> AAC Fehler und vermeidet
+       * unnötigen Qualitätsverlust.
+       */
+
+      if (
+        audioCodec === 'aac'
+      ) {
+        outputArgs.push(
+          `-c:a:${idx}`,
+          'copy'
+        );
 
 
-      outputArgs.push(
-        `-b:a:${idx}`,
-        aacBitrate
-      );
+        audioLog.push(
+          `Audio ${audioIndex}: AAC, ` +
+          `${originalChannels} Kanäle -> COPY`
+        );
+      } else {
+        outputArgs.push(
+          `-c:a:${idx}`,
+          'aac'
+        );
 
 
-      outputArgs.push(
-        `-ac:${idx}`,
-        String(
-          outputChannels
-        )
-      );
+        outputArgs.push(
+          `-b:a:${idx}`,
+          aacBitrate
+        );
 
 
-      const language =
-        (
-          audioStream.tags &&
+        /*
+         * Nur auf maximal 6 Kanäle begrenzen.
+         *
+         * Bei bereits 6 Kanälen wird die Quelle
+         * nicht unnötig mit einem festen Layout
+         * überschrieben.
+         */
+
+        if (
+          originalChannels > maxAudioChannels
+        ) {
+          outputArgs.push(
+            `-ac:${idx}`,
+            String(
+              maxAudioChannels
+            )
+          );
+        }
+
+
+        const language =
           (
-            audioStream.tags.language ||
-            audioStream.tags.LANGUAGE
-          )
-        ) || 'unknown';
+            audioStream.tags &&
+            (
+              audioStream.tags.language ||
+              audioStream.tags.LANGUAGE
+            )
+          ) || 'unknown';
 
 
-      audioLog.push(
-        `Audio ${audioIndex}: ${language}, ` +
-        `${originalChannels} -> ` +
-        `${outputChannels} Kanäle`
-      );
+        audioLog.push(
+          `Audio ${audioIndex}: ${language}, ` +
+          `${originalChannels} -> AAC ` +
+          `${originalChannels > maxAudioChannels ? maxAudioChannels : originalChannels} Kanäle`
+        );
+      }
     }
   );
 
@@ -931,11 +1015,17 @@ module.exports.plugin = function plugin(
 
 
   response.infoLog =
-    '========== CUSTOM H264 QSV 1.7.0 ==========\n' +
+    '========== CUSTOM H264 QSV/AMF 1.8.0 ==========\n' +
 
     `Target codecs: ${targetVideoCodecs.join(', ')}\n` +
 
     `HDR Mode: ${hdrMode}\n` +
+
+    `Tdarr nodeHardwareType: ${nodeHardwareType || 'unknown'}\n` +
+
+    `Hardware encoder: ${encoder || 'NONE'}\n` +
+
+    `Encoder: ${encoderName}\n` +
 
     `Video stream: ${videoIndex}\n` +
 
@@ -965,11 +1055,17 @@ module.exports.plugin = function plugin(
 
     'Hardware decoder: NONE (CPU decode)\n' +
 
-    'Hardware encoder: h264_qsv\n' +
+    (
+      nodeHardwareType === 'qsv'
+        ? `QSV Quality: ${qsvQuality}\nQSV Preset: ${qsvPreset}\n`
+        : ''
+    ) +
 
-    `QSV Quality: ${qsvQuality}\n` +
-
-    `QSV Preset: ${qsvPreset}\n` +
+    (
+      nodeHardwareType === 'amf'
+        ? `AMF Quality: ${amfQuality}\n`
+        : ''
+    ) +
 
     `AAC bitrate: ${aacBitrate}\n` +
 
@@ -1016,3 +1112,4 @@ module.exports.plugin = function plugin(
 
   return response;
 };
+```
