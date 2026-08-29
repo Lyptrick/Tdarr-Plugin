@@ -3,12 +3,12 @@
 /*
  * Tdarr Classic Plugin
  * customH264AacGerman
- * Version 1.9.5
+ * Version 1.9.6
  *
- * FIX 1.9.5:
- * - Fix für "Infinite Transcode Loop": Verhindert erneutes Kodieren,
- *   wenn Video (H.264 8-Bit/SDR) und Audio (AAC) bereits dem Zielformat entsprechen.
- * - Korrektur der Variablen-Prüfung bei Target Video Codecs.
+ * FIX 1.9.6:
+ * - Entfernt 'h264' strikt aus der Target-Codec-Liste.
+ * - Striktere HDR-Erkennung, damit Tonemapping-Filter nicht auf SDR angewendet werden.
+ * - Garantiert "processFile = false", wenn Video bereits H.264 8-Bit SDR ist.
  */
 
 const details = () => ({
@@ -22,7 +22,7 @@ const details = () => ({
     'Verwendet Intel QSV, AMD AMF oder NVIDIA NVENC abhängig vom Node-Mapping. ' +
     'HDR kann nach SDR BT.709 konvertiert werden. ' +
     'Eine deutsche Audiospur wird nach AAC konvertiert.',
-  Version: '1.9.5',
+  Version: '1.9.6',
   Tags: 'h264,qsv,amf,nvenc,aac,german,hdr,directplay,node-mapping',
 
   Inputs: [
@@ -32,7 +32,7 @@ const details = () => ({
       defaultValue: 'hevc,av1,mpeg4,vc1,vp9',
       inputUI: { type: 'text' },
       tooltip:
-        'Kommagetrennte Video-Codecs, die nach H.264 konvertiert werden.',
+        'Kommagetrennte Video-Codecs, DIE NACH H.264 KONVERTIERT WERDEN SOLLEN (z. B. hevc, av1). Niemals h264 eintragen!',
     },
     {
       name: 'Node Hardware Mapping',
@@ -136,107 +136,72 @@ const details = () => ({
       inputUI: { type: 'dropdown', options: ['true', 'false'] },
       tooltip: 'Übernimmt Kapitel.',
     },
-    {
-      name: 'Codecs to H.264',
-      type: 'string',
-      defaultValue: 'hevc,av1,mpeg4',
-      inputUI: { type: 'text' },
-      tooltip: 'Legacy-Alias für Target Video Codecs.',
-    },
   ],
 });
 
 function parseHardwareMapping(value) {
   const result = {};
-
   String(value || '').split(',').forEach((entry) => {
     const pos = entry.indexOf('=');
     if (pos === -1) return;
-
     const node = entry.substring(0, pos).trim().toLowerCase();
     const hardware = entry.substring(pos + 1).trim().toLowerCase();
-
     if (node && hardware) result[node] = hardware;
   });
-
   return result;
 }
 
 function normalizeHardwareType(value) {
   const v = String(value || '').trim().toLowerCase();
-
   if (v === 'qsv' || v.includes('qsv')) return 'qsv';
   if (v === 'amf' || v.includes('amf')) return 'amf';
   if (v === 'nvenc' || v.includes('nvenc')) return 'nvenc';
-
   return '';
 }
 
 function getNodeName(otherArguments) {
   if (!otherArguments) return '';
-
   const candidates = [
     otherArguments.nodeName,
     otherArguments.nodeData && otherArguments.nodeData.nodeName,
-    otherArguments.configVars &&
-      otherArguments.configVars.config &&
-      otherArguments.configVars.config.nodeName,
+    otherArguments.configVars && otherArguments.configVars.config && otherArguments.configVars.config.nodeName,
     otherArguments.configVars && otherArguments.configVars.nodeName,
   ];
-
   for (let i = 0; i < candidates.length; i++) {
-    if (
-      candidates[i] !== undefined &&
-      candidates[i] !== null &&
-      String(candidates[i]).trim() !== ''
-    ) {
+    if (candidates[i] !== undefined && candidates[i] !== null && String(candidates[i]).trim() !== '') {
       return String(candidates[i]).trim();
     }
   }
-
   return '';
 }
 
 function getNodeHardwareType(otherArguments) {
   if (!otherArguments) return '';
-
   const candidates = [
     otherArguments.nodeHardwareType,
     otherArguments.nodeData && otherArguments.nodeData.nodeHardwareType,
-    otherArguments.configVars &&
-      otherArguments.configVars.config &&
-      otherArguments.configVars.config.nodeHardwareType,
+    otherArguments.configVars && otherArguments.configVars.config && otherArguments.configVars.config.nodeHardwareType,
   ];
-
   for (let i = 0; i < candidates.length; i++) {
-    if (
-      candidates[i] !== undefined &&
-      candidates[i] !== null &&
-      String(candidates[i]).trim() !== ''
-    ) {
+    if (candidates[i] !== undefined && candidates[i] !== null && String(candidates[i]).trim() !== '') {
       return String(candidates[i]).trim();
     }
   }
-
   return '';
 }
 
 function bool(value, fallback) {
   if (typeof value === 'boolean') return value;
   if (typeof value !== 'string') return fallback;
-
   const v = value.toLowerCase().trim();
-
   if (v === 'true') return true;
   if (v === 'false') return false;
-
   return fallback;
 }
 
 // eslint-disable-next-line no-unused-vars
 const plugin = (file, librarySettings, inputs, otherArguments) => {
   const lib = require('../methods/lib')();
-
   inputs = lib.loadDefaultValues(inputs, details);
 
   const response = {
@@ -249,129 +214,70 @@ const plugin = (file, librarySettings, inputs, otherArguments) => {
     container: '.mkv',
   };
 
-  const targetVideoCodecs = String(
-    inputs['Target Video Codecs'] ||
-      inputs['Codecs to H.264'] ||
-      'hevc,av1,mpeg4,vc1,vp9'
-  )
+  // Säubere Codec-Liste und schließe 'h264' als Quell-Triggermarke explizit aus
+  const rawTargetCodecs = String(inputs['Target Video Codecs'] || 'hevc,av1,mpeg4,vc1,vp9')
     .toLowerCase()
     .split(',')
-    .map((x) => x.trim())
-    .filter(Boolean);
+    .map((x) => x.trim());
+  const targetVideoCodecs = rawTargetCodecs.filter((x) => x && x !== 'h264' && x !== 'x264');
 
-  const nodeHardwareMapping = String(
-    inputs['Node Hardware Mapping'] ||
-      'Keller-Node=qsv,Windows-AMD=amf'
-  ).trim();
-
+  const nodeHardwareMapping = String(inputs['Node Hardware Mapping'] || 'Keller-Node=qsv,Windows-AMD=amf').trim();
   const qsvQuality = Number(inputs['QSV Quality'] || 18);
   const qsvPreset = String(inputs['QSV Preset'] || 'medium');
+  const amfQuality = String(inputs['AMF Quality'] || 'quality');
+  const amfQP = Number(inputs['AMF QP'] || 20);
+  const aacBitrate = String(inputs['AAC Bitrate'] || '192k');
+  const maxAudioChannels = Number(inputs['Max Audio Channels'] || 6);
 
-  const amfQuality = String(
-    inputs['AMF Quality'] || 'quality'
-  );
-
-  const amfQP = Number(
-    inputs['AMF QP'] || 20
-  );
-
-  const aacBitrate = String(
-    inputs['AAC Bitrate'] || '192k'
-  );
-
-  const maxAudioChannels = Number(
-    inputs['Max Audio Channels'] || 6
-  );
-
-  const germanLanguages = String(
-    inputs['German Languages'] ||
-      'ger,de,deu,german'
-  )
+  const germanLanguages = String(inputs['German Languages'] || 'ger,de,deu,german')
     .toLowerCase()
     .split(',')
     .map((x) => x.trim())
     .filter(Boolean);
 
-  const subtitleMode = String(
-    inputs['Subtitle Mode'] ||
-      'German Forced'
-  );
-
-  const hdrMode = String(
-    inputs['HDR Mode'] ||
-      'Convert HDR to SDR'
-  );
-
-  const removeData = bool(
-    inputs['Remove Data Streams'],
-    true
-  );
-
-  const copyMetadata = bool(
-    inputs['Copy Metadata'],
-    true
-  );
-
-  const copyChapters = bool(
-    inputs['Copy Chapters'],
-    true
-  );
-
-  // ============================================================
-  // BASIC VALIDATION
-  // ============================================================
+  const subtitleMode = String(inputs['Subtitle Mode'] || 'German Forced');
+  const hdrMode = String(inputs['HDR Mode'] || 'Convert HDR to SDR');
+  const removeData = bool(inputs['Remove Data Streams'], true);
+  const copyMetadata = bool(inputs['Copy Metadata'], true);
+  const copyChapters = bool(inputs['Copy Chapters'], true);
 
   if (!file || file.fileMedium !== 'video' || !file.ffProbeData || !Array.isArray(file.ffProbeData.streams)) {
-    response.infoLog = 'CUSTOM H264 AAC 1.9.5: Datei ist kein Video oder probeData fehlt.';
+    response.infoLog = 'CUSTOM H264 AAC 1.9.6: Datei ist kein Video oder probeData fehlt.';
     return response;
   }
 
   const streams = file.ffProbeData.streams;
 
-  // ============================================================
-  // NODE / HARDWARE
-  // ============================================================
-
+  // Hardware-Erkennung
   const currentNodeName = getNodeName(otherArguments);
   const rawNodeHardwareType = getNodeHardwareType(otherArguments);
   const mapping = parseHardwareMapping(nodeHardwareMapping);
 
   let detectedHardware = '';
-
   if (currentNodeName && mapping[currentNodeName.toLowerCase()]) {
     detectedHardware = normalizeHardwareType(mapping[currentNodeName.toLowerCase()]);
   }
-
   if (!detectedHardware && rawNodeHardwareType) {
     detectedHardware = normalizeHardwareType(rawNodeHardwareType);
   }
 
   let encoder = '';
-
-  if (detectedHardware === 'qsv') {
-    encoder = 'h264_qsv';
-  } else if (detectedHardware === 'amf') {
-    encoder = 'h264_amf';
-  } else if (detectedHardware === 'nvenc') {
-    encoder = 'h264_nvenc';
-  }
+  if (detectedHardware === 'qsv') encoder = 'h264_qsv';
+  else if (detectedHardware === 'amf') encoder = 'h264_amf';
+  else if (detectedHardware === 'nvenc') encoder = 'h264_nvenc';
 
   if (!encoder) {
-    response.infoLog = 'CUSTOM H264 AAC 1.9.5: Kein zugewiesener Hardware-Encoder gefunden.';
+    response.infoLog = 'CUSTOM H264 AAC 1.9.6: Kein zugewiesener Hardware-Encoder gefunden.';
     return response;
   }
 
-  // ============================================================
-  // VIDEO ANALYSIS
-  // ============================================================
-
+  // Video-Analyse
   let videoStream = null;
   let videoIndex = -1;
 
   for (let i = 0; i < streams.length; i++) {
     const stream = streams[i];
     if (String(stream.codec_type || '').toLowerCase() !== 'video') continue;
-
     const codec = String(stream.codec_name || '').toLowerCase();
     if (codec === 'mjpeg' || codec === 'png') continue;
 
@@ -390,37 +296,22 @@ const plugin = (file, librarySettings, inputs, otherArguments) => {
   const pixelFormat = String(videoStream.pix_fmt || '').toLowerCase();
   const bitDepth = Number(videoStream.bits_per_raw_sample || videoStream.bit_depth || 0);
 
-  const is10Bit =
-    bitDepth >= 10 ||
-    pixelFormat.includes('10') ||
-    pixelFormat.includes('p010') ||
-    videoProfile.includes('10');
-
-  const isH264EightBit =
-    videoCodec === 'h264' &&
-    !is10Bit &&
-    pixelFormat !== 'yuv422p' &&
-    pixelFormat !== 'yuv444p';
+  const is10Bit = bitDepth >= 10 || pixelFormat.includes('10') || pixelFormat.includes('p010') || videoProfile.includes('10');
 
   const colorTransfer = String(videoStream.color_transfer || videoStream.color_transfer_characteristics || '').toLowerCase();
   const colorPrimaries = String(videoStream.color_primaries || '').toLowerCase();
 
-  const isHDR =
-    colorTransfer.includes('smpte2084') ||
-    colorTransfer.includes('pq') ||
-    colorPrimaries.includes('bt2020') ||
-    colorTransfer.includes('hlg');
-
+  const isHDR = colorTransfer.includes('smpte2084') || colorTransfer.includes('pq') || colorPrimaries.includes('bt2020') || colorTransfer.includes('hlg');
   const needsHDRConversion = isHDR && hdrMode.toLowerCase().includes('convert');
 
-  // Prüfen, ob Re-Encode des Videos NOTWENDIG ist
-  const isTargetCodec = targetVideoCodecs.includes(videoCodec);
-  const needsVideoTranscode = !isH264EightBit || needsHDRConversion || isTargetCodec;
+  // Prüfen, ob Video bereits ein kompatibles H.264 8-Bit SDR ist
+  const isAlreadyH264SDR = videoCodec === 'h264' && !is10Bit && !isHDR;
+  const isMatchTargetList = targetVideoCodecs.includes(videoCodec);
 
-  // ============================================================
-  // AUDIO ANALYSIS
-  // ============================================================
+  // Re-Encode ist NUR nötig, wenn der Codec in der Umwandlungsliste steht, 10-Bit ist ODER HDR konvertiert werden muss
+  const needsVideoTranscode = !isAlreadyH264SDR && (isMatchTargetList || is10Bit || needsHDRConversion);
 
+  // Audio-Analyse
   let germanAudio = null;
   let germanAudioIndex = -1;
 
@@ -432,9 +323,7 @@ const plugin = (file, librarySettings, inputs, otherArguments) => {
     const language = String(tags.language || tags.LANGUAGE || tags.lang || stream.language || '').toLowerCase().trim();
     const title = String(tags.title || '').toLowerCase();
 
-    const languageMatches =
-      germanLanguages.includes(language) ||
-      germanLanguages.some((lang) => title.includes(lang));
+    const languageMatches = germanLanguages.includes(language) || germanLanguages.some((lang) => title.includes(lang));
 
     if (languageMatches) {
       germanAudio = stream;
@@ -444,7 +333,7 @@ const plugin = (file, librarySettings, inputs, otherArguments) => {
   }
 
   if (!germanAudio) {
-    response.infoLog = 'CUSTOM H264 AAC 1.9.5: Keine deutsche Audiospur gefunden. Überspringe.';
+    response.infoLog = 'CUSTOM H264 AAC 1.9.6: Keine deutsche Audiospur gefunden. Überspringe.';
     return response;
   }
 
@@ -452,29 +341,22 @@ const plugin = (file, librarySettings, inputs, otherArguments) => {
   const germanAudioChannels = Number(germanAudio.channels || 2);
   const outputAudioChannels = maxAudioChannels > 0 ? Math.min(germanAudioChannels, maxAudioChannels) : germanAudioChannels;
 
-  // Audio muss encodiert werden, wenn es kein AAC ist ODER zu viele Kanäle hat
   const needsAudioTranscode = germanAudioCodec !== 'aac' || germanAudioChannels > outputAudioChannels;
 
-  // ============================================================
-  // LOOP PREVENTION CHECK
-  // ============================================================
-
+  // Strikter Abbruch zur Loop-Vermeidung
   if (!needsVideoTranscode && !needsAudioTranscode) {
     response.infoLog =
-      '========== CUSTOM H264 AAC 1.9.5 ==========\n' +
-      'Datei ist bereits im Zielformat:\n' +
-      `- Video: ${videoCodec} 8-Bit SDR (Kein Re-Encode)\n` +
-      `- Audio: ${germanAudioCodec} ${germanAudioChannels} Kanäle (Kein Re-Encode)\n` +
-      'Verarbeitung wird beendet (Loop Prevention).\n' +
+      '========== CUSTOM H264 AAC 1.9.6 ==========\n' +
+      'Datei entspricht vollkommen dem Zielformat:\n' +
+      `- Video: ${videoCodec} 8-Bit SDR (Passthrough)\n` +
+      `- Audio: ${germanAudioCodec} ${germanAudioChannels} Kanäle (Passthrough)\n` +
+      'Verarbeitung wird erfolgreich beendet.\n' +
       '==========================================';
     response.processFile = false;
     return response;
   }
 
-  // ============================================================
-  // SUBTITLES
-  // ============================================================
-
+  // Untertitel
   const selectedSubtitles = [];
   const subtitleModeLower = subtitleMode.toLowerCase();
   const keepSubtitles = !subtitleModeLower.includes('none');
@@ -496,31 +378,30 @@ const plugin = (file, librarySettings, inputs, otherArguments) => {
     }
   }
 
-  // ============================================================
-  // FFMPEG ARGS
-  // ============================================================
-
+  // FFmpeg Arguments
   const args = [];
 
   args.push('-map', `0:${videoIndex}`);
   args.push('-map', `0:${germanAudioIndex}`);
 
-  // Video-Encoding
+  // Video Parameter
   if (!needsVideoTranscode) {
     args.push('-c:v', 'copy');
-  } else if (encoder === 'h264_qsv') {
-    args.push('-c:v', 'h264_qsv', '-global_quality', String(qsvQuality), '-preset', qsvPreset, '-pix_fmt', 'nv12');
-  } else if (encoder === 'h264_amf') {
-    args.push('-c:v', 'h264_amf', '-quality', amfQuality, '-rc', 'cqp', '-qp_i', String(amfQP), '-qp_p', String(amfQP), '-qp_b', String(amfQP), '-pix_fmt', 'yuv420p');
   } else {
-    args.push('-c:v', 'h264_nvenc', '-cq', String(amfQP), '-pix_fmt', 'yuv420p');
+    if (encoder === 'h264_qsv') {
+      args.push('-c:v', 'h264_qsv', '-global_quality', String(qsvQuality), '-preset', qsvPreset, '-pix_fmt', 'nv12');
+    } else if (encoder === 'h264_amf') {
+      args.push('-c:v', 'h264_amf', '-quality', amfQuality, '-rc', 'cqp', '-qp_i', String(amfQP), '-qp_p', String(amfQP), '-qp_b', String(amfQP), '-pix_fmt', 'yuv420p');
+    } else {
+      args.push('-c:v', 'h264_nvenc', '-cq', String(amfQP), '-pix_fmt', 'yuv420p');
+    }
+
+    if (needsHDRConversion) {
+      args.push('-vf', 'tonemap=mobius:desat=0,format=yuv420p');
+    }
   }
 
-  if (needsHDRConversion) {
-    args.push('-vf', 'tonemap=mobius:desat=0,format=yuv420p');
-  }
-
-  // Audio-Encoding
+  // Audio Parameter
   if (needsAudioTranscode) {
     args.push('-c:a:0', 'aac', '-b:a:0', aacBitrate, '-ac:a:0', String(outputAudioChannels));
   } else {
@@ -529,7 +410,7 @@ const plugin = (file, librarySettings, inputs, otherArguments) => {
 
   args.push('-metadata:s:a:0', 'language=de', '-disposition:a:0', 'default');
 
-  // Subtitles
+  // Untertitel Parameter
   selectedSubtitles.forEach((subtitle, idx) => {
     const subtitleIndex = subtitle.index !== undefined ? subtitle.index : streams.indexOf(subtitle);
     args.push('-map', `0:${subtitleIndex}`, `-c:s:${idx}`, 'copy');
@@ -550,7 +431,7 @@ const plugin = (file, librarySettings, inputs, otherArguments) => {
   response.processFile = true;
   response.reQueueAfter = true;
 
-  response.infoLog = `CUSTOM H264 AAC 1.9.5: Konvertierung gestartet (Video: ${needsVideoTranscode ? encoder : 'copy'}, Audio: ${needsAudioTranscode ? 'aac' : 'copy'})`;
+  response.infoLog = `CUSTOM H264 AAC 1.9.6: Konvertierung gestartet (Video: ${needsVideoTranscode ? encoder : 'copy'}, Audio: ${needsAudioTranscode ? 'aac' : 'copy'})`;
 
   return response;
 };
