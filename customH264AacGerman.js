@@ -4,37 +4,43 @@
  * Tdarr Classic Plugin
  * customH264AacGerman
  *
- * Version 1.9.10
+ * Version 1.9.11
  *
- * Basis: funktionierende 1.9.3-Struktur
+ * ============================================================
+ * ZIEL
+ * ============================================================
  *
- * FIX / ÄNDERUNGEN 1.9.10:
- *
- * - Node-Hardware ausschließlich über konfigurierbares Mapping
- * - Node-Name wird aus den bekannten Tdarr-Strukturen gelesen
- * - Node-Mapping hat Vorrang vor nodeHardwareType
- * - Unterstützt:
- *      Keller-Node=qsv
- *      Windows-AMD=amf
- *      beliebige weitere Nodes
- * - QSV -> h264_qsv
- * - AMF -> h264_amf
- * - NVENC -> h264_nvenc
- * - H.264 8-bit SDR wird kopiert
  * - HEVC / AV1 / MPEG4 / VC1 / VP9 -> H.264
- * - 10-bit H.264 -> H.264 8-bit
+ * - H.264 8-bit SDR -> COPY
+ * - H.264 10-bit -> H.264 8-bit
  * - HDR10 / HLG -> optional SDR BT.709
- * - Deutsche Audiospur wird ausgewählt
- * - AAC wird erzeugt bzw. vorhandenes AAC kopiert
- * - Andere Audiospuren werden NICHT übernommen
- * - Deutsche Forced-Untertitel können übernommen werden
- * - Datenstreams werden entfernt
+ * - Intel QSV / AMD AMF / NVIDIA NVENC
+ * - Hardware ausschließlich über Node Hardware Mapping
+ * - CPU Decode, kein Hardware Decode
+ * - genau eine deutsche Audiospur
+ * - Audio bei Bedarf -> AAC
+ * - maximal konfigurierte Kanalzahl
+ * - deutsche Forced-Untertitel optional
+ * - andere Audio-/Subtitle-/Data-Streams werden nicht übernommen
  * - Metadaten und Kapitel optional
  *
- * WICHTIG:
- * Dieses Plugin verwendet KEIN Hardware-Decoding.
- * Die Decodierung erfolgt über CPU.
- * Die GPU übernimmt ausschließlich das Encoding.
+ * ============================================================
+ * WICHTIG
+ * ============================================================
+ *
+ * Node Hardware Mapping:
+ *
+ *   Keller-Node=qsv,Windows-AMD=amf
+ *
+ * Unterstützt:
+ *
+ *   qsv   -> h264_qsv
+ *   amf   -> h264_amf
+ *   nvenc -> h264_nvenc
+ *
+ * Der Node-Name hat Vorrang vor nodeHardwareType.
+ *
+ * ============================================================
  */
 
 const details = () => ({
@@ -42,7 +48,7 @@ const details = () => ({
 
   Stage: 'Pre-processing',
 
-  Name: 'H.264 AAC Direct Play (QSV/AMF) 1.9.10',
+  Name: 'H.264 AAC Direct Play (QSV/AMF/NVENC) 1.9.11',
 
   Type: 'Video',
 
@@ -50,11 +56,11 @@ const details = () => ({
 
   Description:
     'Erzeugt H.264 8-bit für maximale Direct-Play-Kompatibilität. ' +
-    'Verwendet Intel QSV, AMD AMF oder NVIDIA NVENC abhängig vom Node-Mapping. ' +
-    'HDR kann nach SDR BT.709 konvertiert werden. ' +
+    'Hardware wird über das konfigurierbare Node Hardware Mapping ausgewählt. ' +
+    'HDR10/HLG kann nach SDR BT.709 konvertiert werden. ' +
     'Eine deutsche Audiospur wird ausgewählt und bei Bedarf nach AAC konvertiert.',
 
-  Version: '1.9.10',
+  Version: '1.9.11',
 
   Tags:
     'h264,qsv,amf,nvenc,aac,german,hdr,directplay,node-mapping',
@@ -188,7 +194,8 @@ const details = () => ({
 
       type: 'string',
 
-      defaultValue: '192k',
+      defaultValue:
+        '192k',
 
       inputUI: {
         type: 'text',
@@ -204,21 +211,18 @@ const details = () => ({
 
       type: 'number',
 
-      defaultValue: 6,
+      defaultValue:
+        6,
 
       inputUI: {
         type: 'text',
       },
 
       tooltip:
-        'Maximale Anzahl Audiokanäle. ' +
-        '6 = 5.1. Kleinere Quellen werden nicht hochgerechnet.',
+        'Maximale Audiokanäle. 6 = 5.1. ' +
+        'Eine kleinere Quelle wird nicht künstlich hochgerechnet.',
     },
 
-
-    // ============================================================
-    // GERMAN LANGUAGES
-    // ============================================================
 
     {
       name: 'German Languages',
@@ -294,7 +298,7 @@ const details = () => ({
 
 
     // ============================================================
-    // STREAMS / METADATA
+    // OTHER
     // ============================================================
 
     {
@@ -302,11 +306,16 @@ const details = () => ({
 
       type: 'boolean',
 
-      defaultValue: true,
+      defaultValue:
+        true,
 
       inputUI: {
         type: 'dropdown',
-        options: ['true', 'false'],
+
+        options: [
+          'true',
+          'false',
+        ],
       },
 
       tooltip:
@@ -319,11 +328,16 @@ const details = () => ({
 
       type: 'boolean',
 
-      defaultValue: true,
+      defaultValue:
+        true,
 
       inputUI: {
         type: 'dropdown',
-        options: ['true', 'false'],
+
+        options: [
+          'true',
+          'false',
+        ],
       },
 
       tooltip:
@@ -336,47 +350,82 @@ const details = () => ({
 
       type: 'boolean',
 
-      defaultValue: true,
+      defaultValue:
+        true,
 
       inputUI: {
         type: 'dropdown',
-        options: ['true', 'false'],
+
+        options: [
+          'true',
+          'false',
+        ],
       },
 
       tooltip:
         'Kapitel übernehmen.',
+    },
+
+
+    // ============================================================
+    // LEGACY
+    // ============================================================
+
+    {
+      name: 'Codecs to H.264',
+
+      type: 'string',
+
+      defaultValue:
+        'hevc,av1,mpeg4,vc1,vp9',
+
+      inputUI: {
+        type: 'text',
+      },
+
+      tooltip:
+        'Legacy-Alias für Target Video Codecs.',
     },
   ],
 });
 
 
 // ================================================================
-// HELPER
+// HARDWARE MAPPING
 // ================================================================
 
 function parseHardwareMapping(value) {
+
   const result = {};
 
   String(value || '')
     .split(',')
     .forEach((entry) => {
 
-      const parts = entry.split('=');
+      const parts =
+        entry.split('=');
 
       if (parts.length < 2) {
         return;
       }
 
       const node =
-        String(parts[0] || '').trim();
+        String(parts[0] || '')
+          .trim();
 
       const hardware =
         String(
-          parts.slice(1).join('=') || ''
-        ).trim();
+          parts
+            .slice(1)
+            .join('=') || ''
+        )
+          .trim();
 
       if (node && hardware) {
-        result[node.toLowerCase()] =
+
+        result[
+          node.toLowerCase()
+        ] =
           hardware.toLowerCase();
       }
     });
@@ -386,7 +435,7 @@ function parseHardwareMapping(value) {
 
 
 // ================================================================
-// HARDWARE NORMALISIEREN
+// NORMALIZE HARDWARE
 // ================================================================
 
 function normalizeHardwareType(value) {
@@ -422,7 +471,7 @@ function normalizeHardwareType(value) {
 
 
 // ================================================================
-// NODE-NAMEN ERMITTELN
+// NODE NAME
 // ================================================================
 
 function getNodeName(otherArguments) {
@@ -430,12 +479,6 @@ function getNodeName(otherArguments) {
   if (!otherArguments) {
     return '';
   }
-
-  /*
-   * Bekannte Tdarr-Strukturen.
-   *
-   * Die Reihenfolge ist absichtlich konservativ.
-   */
 
   const candidates = [
 
@@ -481,7 +524,7 @@ function getNodeName(otherArguments) {
 
 
 // ================================================================
-// TDARR HARDWARE TYPE
+// NODE HARDWARE TYPE
 // ================================================================
 
 function getNodeHardwareType(otherArguments) {
@@ -530,11 +573,15 @@ function getNodeHardwareType(otherArguments) {
 
 function bool(value, fallback) {
 
-  if (typeof value === 'boolean') {
+  if (
+    typeof value === 'boolean'
+  ) {
     return value;
   }
 
-  if (typeof value !== 'string') {
+  if (
+    typeof value !== 'string'
+  ) {
     return fallback;
   }
 
@@ -601,7 +648,6 @@ function isForcedSubtitle(stream) {
 // PLUGIN
 // ================================================================
 
-// eslint-disable-next-line no-unused-vars
 const plugin = (
   file,
   librarySettings,
@@ -648,11 +694,15 @@ const plugin = (
   const targetVideoCodecs =
     String(
       inputs['Target Video Codecs'] ||
+      inputs['Codecs to H.264'] ||
       'hevc,av1,mpeg4,vc1,vp9'
     )
       .toLowerCase()
       .split(',')
-      .map((x) => x.trim())
+      .map(
+        (x) =>
+          x.trim()
+      )
       .filter(Boolean);
 
 
@@ -660,12 +710,14 @@ const plugin = (
     String(
       inputs['Node Hardware Mapping'] ||
       'Keller-Node=qsv,Windows-AMD=amf'
-    ).trim();
+    )
+      .trim();
 
 
   const qsvQuality =
     Number(
-      inputs['QSV Quality'] || 18
+      inputs['QSV Quality'] ||
+      18
     );
 
 
@@ -673,19 +725,22 @@ const plugin = (
     String(
       inputs['QSV Preset'] ||
       'medium'
-    ).trim();
+    )
+      .trim();
 
 
   const amfQuality =
     String(
       inputs['AMF Quality'] ||
       'quality'
-    ).trim();
+    )
+      .trim();
 
 
   const amfQP =
     Number(
-      inputs['AMF QP'] || 20
+      inputs['AMF QP'] ||
+      20
     );
 
 
@@ -693,12 +748,14 @@ const plugin = (
     String(
       inputs['AAC Bitrate'] ||
       '192k'
-    ).trim();
+    )
+      .trim();
 
 
   const maxAudioChannels =
     Number(
-      inputs['Max Audio Channels'] || 6
+      inputs['Max Audio Channels'] ||
+      6
     );
 
 
@@ -709,7 +766,10 @@ const plugin = (
     )
       .toLowerCase()
       .split(',')
-      .map((x) => x.trim())
+      .map(
+        (x) =>
+          x.trim()
+      )
       .filter(Boolean);
 
 
@@ -717,14 +777,16 @@ const plugin = (
     String(
       inputs['Subtitle Mode'] ||
       'German Forced'
-    ).trim();
+    )
+      .trim();
 
 
   const hdrMode =
     String(
       inputs['HDR Mode'] ||
       'Convert HDR to SDR'
-    ).trim();
+    )
+      .trim();
 
 
   const removeData =
@@ -758,7 +820,7 @@ const plugin = (
   ) {
 
     response.infoLog =
-      'CUSTOM H264 AAC 1.9.10\n' +
+      'CUSTOM H264 AAC 1.9.11\n' +
       'Datei ist kein Video. Datei wird übersprungen.';
 
     return response;
@@ -773,7 +835,7 @@ const plugin = (
   ) {
 
     response.infoLog =
-      'CUSTOM H264 AAC 1.9.10\n' +
+      'CUSTOM H264 AAC 1.9.11\n' +
       'FFprobe-Daten fehlen. Datei wird übersprungen.';
 
     return response;
@@ -789,7 +851,9 @@ const plugin = (
   // ============================================================
 
   const currentNodeName =
-    getNodeName(otherArguments);
+    getNodeName(
+      otherArguments
+    );
 
 
   const rawNodeHardwareType =
@@ -804,13 +868,16 @@ const plugin = (
     );
 
 
-  let detectedHardware = '';
+  let detectedHardware =
+    '';
 
-  let mappingDescription = '';
+
+  let mappingDescription =
+    '';
 
 
   // ------------------------------------------------------------
-  // PRIMÄR: NODE NAME
+  // NODE NAME HAS PRIORITY
   // ------------------------------------------------------------
 
   if (
@@ -827,17 +894,16 @@ const plugin = (
         ]
       );
 
+
     mappingDescription =
-      'Match über Node-Name (' +
-      currentNodeName +
-      ' -> ' +
-      detectedHardware +
-      ')';
+      `Match über Node-Name (` +
+      `${currentNodeName} -> ` +
+      `${detectedHardware})`;
   }
 
 
   // ------------------------------------------------------------
-  // FALLBACK: TDARR HARDWARE TYPE
+  // FALLBACK HARDWARE TYPE
   // ------------------------------------------------------------
 
   if (
@@ -850,79 +916,76 @@ const plugin = (
         rawNodeHardwareType
       );
 
+
     mappingDescription =
-      'Fallback über Tdarr nodeHardwareType (' +
-      rawNodeHardwareType +
-      ')';
+      `Fallback über Tdarr ` +
+      `nodeHardwareType (` +
+      `${rawNodeHardwareType})`;
   }
 
 
-  // ============================================================
-  // ENCODER
-  // ============================================================
+  let encoder =
+    '';
 
-  let encoder = '';
 
-  let hardwareVendor = '';
+  let hardwareVendor =
+    '';
 
 
   if (
     detectedHardware === 'qsv'
   ) {
 
-    encoder = 'h264_qsv';
+    encoder =
+      'h264_qsv';
 
-    hardwareVendor = 'Intel QSV';
+    hardwareVendor =
+      'Intel QSV';
+  }
 
-  } else if (
+  else if (
     detectedHardware === 'amf'
   ) {
 
-    encoder = 'h264_amf';
+    encoder =
+      'h264_amf';
 
-    hardwareVendor = 'AMD AMF';
+    hardwareVendor =
+      'AMD AMF';
+  }
 
-  } else if (
+  else if (
     detectedHardware === 'nvenc'
   ) {
 
-    encoder = 'h264_nvenc';
+    encoder =
+      'h264_nvenc';
 
-    hardwareVendor = 'NVIDIA NVENC';
+    hardwareVendor =
+      'NVIDIA NVENC';
   }
 
-
-  // ============================================================
-  // KEIN HARDWARE MAPPING
-  // ============================================================
 
   if (!encoder) {
 
     response.infoLog =
-      '========== CUSTOM H264 AAC 1.9.10 ==========\n' +
-
+      '========== CUSTOM H264 AAC 1.9.11 ==========\n' +
       `Node Name: ${
-        currentNodeName || 'unknown'
+        currentNodeName ||
+        'unknown'
       }\n` +
-
       `Tdarr nodeHardwareType: ${
-        rawNodeHardwareType || 'unknown'
+        rawNodeHardwareType ||
+        'unknown'
       }\n` +
-
       `Node Hardware Mapping: ${
         nodeHardwareMapping
       }\n` +
-
       'Hardware mapping result: NO MATCH\n\n' +
-
       'Unterstützte Hardware:\n' +
-
       'qsv = Intel QSV\n' +
-
       'amf = AMD AMF\n' +
-
       'nvenc = NVIDIA NVENC\n\n' +
-
       'Datei wird aus Sicherheitsgründen übersprungen.\n';
 
     return response;
@@ -933,9 +996,12 @@ const plugin = (
   // VIDEO STREAM
   // ============================================================
 
-  let videoStream = null;
+  let videoStream =
+    null;
 
-  let videoIndex = -1;
+
+  let videoIndex =
+    -1;
 
 
   for (
@@ -951,9 +1017,9 @@ const plugin = (
     if (
       String(
         stream.codec_type || ''
-      ).toLowerCase() !== 'video'
+      ).toLowerCase() !==
+      'video'
     ) {
-
       continue;
     }
 
@@ -969,7 +1035,6 @@ const plugin = (
       codec === 'png' ||
       codec === 'bmp'
     ) {
-
       continue;
     }
 
@@ -991,7 +1056,7 @@ const plugin = (
   if (!videoStream) {
 
     response.infoLog =
-      'CUSTOM H264 AAC 1.9.10\n' +
+      'CUSTOM H264 AAC 1.9.11\n' +
       'Kein verwendbarer Videostream gefunden.';
 
     return response;
@@ -999,25 +1064,28 @@ const plugin = (
 
 
   // ============================================================
-  // VIDEO INFORMATION
+  // VIDEO PROPERTIES
   // ============================================================
 
   const videoCodec =
     String(
       videoStream.codec_name || ''
-    ).toLowerCase();
+    )
+      .toLowerCase();
 
 
   const videoProfile =
     String(
       videoStream.profile || ''
-    ).toLowerCase();
+    )
+      .toLowerCase();
 
 
   const pixelFormat =
     String(
       videoStream.pix_fmt || ''
-    ).toLowerCase();
+    )
+      .toLowerCase();
 
 
   const width =
@@ -1036,7 +1104,13 @@ const plugin = (
     Number(
       videoStream.bits_per_raw_sample ||
       videoStream.bit_depth ||
-      0
+      (
+        pixelFormat.includes('10') ||
+        pixelFormat.includes('p010') ||
+        pixelFormat.includes('p012')
+          ? 10
+          : 8
+      )
     );
 
 
@@ -1050,7 +1124,7 @@ const plugin = (
 
 
   // ============================================================
-  // HDR
+  // COLOR
   // ============================================================
 
   const colorTransfer =
@@ -1087,8 +1161,15 @@ const plugin = (
    *
    * BT.2020 alleine bedeutet NICHT automatisch HDR.
    *
-   * HDR10 = PQ / SMPTE 2084
-   * HLG   = ARIB STD-B67
+   * HDR10:
+   *   SMPTE ST 2084 / PQ
+   *
+   * HLG:
+   *   ARIB STD-B67
+   *
+   * Dadurch wird ein bereits nach SDR konvertiertes H.264
+   * mit eventuell verbliebenen BT.2020-Metadaten nicht
+   * nochmals tonemapped.
    */
 
   const isPQ =
@@ -1132,11 +1213,22 @@ const plugin = (
     pixelFormat !== 'yuv444p';
 
 
-  const targetCodec =
+  const isTargetCodec =
     targetVideoCodecs.includes(
       videoCodec
     );
 
+
+  /*
+   * H.264 8-bit:
+   *
+   *   SDR -> COPY
+   *   HDR -> encode if tonemapping enabled
+   *
+   * Other codecs:
+   *
+   *   always encode if configured target
+   */
 
   const copyVideo =
     isH264EightBit &&
@@ -1146,19 +1238,12 @@ const plugin = (
   const needsVideoTranscode =
     !copyVideo &&
     (
-      targetCodec ||
+      isTargetCodec ||
       is10Bit ||
       needsHDRConversion ||
       videoCodec !== 'h264'
     );
 
-
-  /*
-   * Sicherheitsprüfung:
-   *
-   * Wenn ein unbekannter Codec nicht als Zielcodec
-   * konfiguriert ist, wird nichts gemacht.
-   */
 
   if (
     !needsVideoTranscode &&
@@ -1166,11 +1251,12 @@ const plugin = (
   ) {
 
     response.infoLog =
-      'CUSTOM H264 AAC 1.9.10\n' +
-
+      'CUSTOM H264 AAC 1.9.11\n' +
       `Video-Codec "${videoCodec}" ` +
       'ist nicht als Zielcodec konfiguriert.\n' +
-
+      `Konfigurierte Zielcodecs: ${
+        targetVideoCodecs.join(', ')
+      }\n` +
       'Datei wird übersprungen.';
 
     return response;
@@ -1181,9 +1267,12 @@ const plugin = (
   // AUDIO
   // ============================================================
 
-  let germanAudio = null;
+  let germanAudio =
+    null;
 
-  let germanAudioIndex = -1;
+
+  let germanAudioIndex =
+    -1;
 
 
   for (
@@ -1199,15 +1288,17 @@ const plugin = (
     if (
       String(
         stream.codec_type || ''
-      ).toLowerCase() !== 'audio'
+      ).toLowerCase() !==
+      'audio'
     ) {
-
       continue;
     }
 
 
     const language =
-      getLanguage(stream);
+      getLanguage(
+        stream
+      );
 
 
     const title =
@@ -1231,7 +1322,9 @@ const plugin = (
       );
 
 
-    if (languageMatches) {
+    if (
+      languageMatches
+    ) {
 
       germanAudio =
         stream;
@@ -1239,7 +1332,9 @@ const plugin = (
 
       germanAudioIndex =
         stream.index !== undefined
-          ? Number(stream.index)
+          ? Number(
+              stream.index
+            )
           : i;
 
 
@@ -1251,14 +1346,21 @@ const plugin = (
   if (!germanAudio) {
 
     response.infoLog =
-      'CUSTOM H264 AAC 1.9.10\n' +
-
+      'CUSTOM H264 AAC 1.9.11\n' +
+      `Node Name: ${
+        currentNodeName ||
+        'unknown'
+      }\n` +
+      `Hardware encoder: ${
+        encoder
+      }\n` +
+      `Video codec: ${
+        videoCodec
+      }\n\n` +
       'Keine deutsche Audiospur gefunden.\n' +
-
       `Gesuchte Sprachen: ${
         germanLanguages.join(', ')
-      }\n\n` +
-
+      }\n` +
       'Datei wird aus Sicherheitsgründen übersprungen.';
 
     return response;
@@ -1268,7 +1370,8 @@ const plugin = (
   const germanAudioCodec =
     String(
       germanAudio.codec_name || ''
-    ).toLowerCase();
+    )
+      .toLowerCase();
 
 
   const germanAudioChannels =
@@ -1305,11 +1408,13 @@ const plugin = (
   // SUBTITLES
   // ============================================================
 
-  const selectedSubtitles = [];
+  const selectedSubtitles =
+    [];
 
 
   const subtitleModeLower =
-    subtitleMode.toLowerCase();
+    subtitleMode
+      .toLowerCase();
 
 
   const keepSubtitles =
@@ -1342,13 +1447,14 @@ const plugin = (
         ).toLowerCase() !==
         'subtitle'
       ) {
-
         continue;
       }
 
 
       const language =
-        getLanguage(stream);
+        getLanguage(
+          stream
+        );
 
 
       const isGerman =
@@ -1371,243 +1477,30 @@ const plugin = (
         )
       ) {
 
-        selectedSubtitles.push(
-          stream
-        );
+        selectedSubtitles.push({
+          stream,
+          index:
+            stream.index !== undefined
+              ? Number(
+                  stream.index
+                )
+              : i,
+        });
       }
     }
   }
 
 
   // ============================================================
-  // STREAM CLEANUP CHECK
+  // FFMPEG
   // ============================================================
 
-  let hasOtherAudio = false;
-
-
-  for (
-    let i = 0;
-    i < streams.length;
-    i++
-  ) {
-
-    const stream =
-      streams[i];
-
-
-    if (
-      String(
-        stream.codec_type || ''
-      ).toLowerCase() !== 'audio'
-    ) {
-
-      continue;
-    }
-
-
-    const streamIndex =
-      stream.index !== undefined
-        ? Number(stream.index)
-        : i;
-
-
-    if (
-      streamIndex !==
-      germanAudioIndex
-    ) {
-
-      hasOtherAudio = true;
-
-      break;
-    }
-  }
-
-
-  let hasUnwantedSubtitle = false;
-
-
-  for (
-    let i = 0;
-    i < streams.length;
-    i++
-  ) {
-
-    const stream =
-      streams[i];
-
-
-    if (
-      String(
-        stream.codec_type || ''
-      ).toLowerCase() !==
-      'subtitle'
-    ) {
-
-      continue;
-    }
-
-
-    const streamIndex =
-      stream.index !== undefined
-        ? Number(stream.index)
-        : i;
-
-
-    const selected =
-      selectedSubtitles.some(
-        (subtitle) => {
-
-          const index =
-            subtitle.index !== undefined
-              ? Number(subtitle.index)
-              : streams.indexOf(
-                  subtitle
-                );
-
-          return (
-            index === streamIndex
-          );
-        }
-      );
-
-
-    if (!selected) {
-
-      hasUnwantedSubtitle =
-        true;
-
-      break;
-    }
-  }
-
-
-  let hasDataStream = false;
-
-
-  for (
-    let i = 0;
-    i < streams.length;
-    i++
-  ) {
-
-    const type =
-      String(
-        streams[i].codec_type || ''
-      ).toLowerCase();
-
-
-    if (
-      type === 'data'
-    ) {
-
-      hasDataStream = true;
-
-      break;
-    }
-  }
-
-
-  // ============================================================
-  // CONTAINER
-  // ============================================================
-
-  const sourceContainer =
-    String(
-      file.container || ''
-    )
-      .toLowerCase()
-      .replace(
-        /^\./,
-        ''
-      );
-
-
-  const targetContainer =
-    'mkv';
-
-
-  const needsContainerChange =
-    sourceContainer !==
-    targetContainer;
-
-
-  const needsStreamCleanup =
-    hasOtherAudio ||
-    hasUnwantedSubtitle ||
-    hasDataStream;
-
-
-  // ============================================================
-  // FINAL NO-WORK CHECK
-  // ============================================================
-
-  const noWorkNeeded =
-    copyVideo &&
-    !needsAudioTranscode &&
-    !needsStreamCleanup &&
-    !needsContainerChange;
-
-
-  if (noWorkNeeded) {
-
-    response.infoLog =
-      '========== CUSTOM H264 AAC 1.9.10 ==========\n' +
-
-      'FINAL CHECK: KEINE TRANSCODIERUNG ERFORDERLICH\n\n' +
-
-      `Node Name: ${
-        currentNodeName || 'unknown'
-      }\n` +
-
-      `Hardware Mapping: ${
-        mappingDescription
-      }\n` +
-
-      `Hardware Encoder: ${
-        encoder
-      }\n\n` +
-
-      `Video: ${
-        videoCodec
-      }, ${
-        bitDepth || 8
-      } Bit -> COPY\n` +
-
-      `Audio: ${
-        germanAudioCodec
-      } -> COPY\n` +
-
-      'Streams: bereits korrekt\n\n' +
-
-      'Datei wird endgültig übersprungen.\n';
-
-
-    response.processFile =
-      false;
-
-
-    response.preset =
-      '';
-
-
-    response.reQueueAfter =
-      false;
-
-
-    return response;
-  }
-
-
-  // ============================================================
-  // FFMPEG ARGUMENTS
-  // ============================================================
-
-  const args = [];
+  const args =
+    [];
 
 
   // ------------------------------------------------------------
-  // VIDEO
+  // VIDEO MAP
   // ------------------------------------------------------------
 
   args.push(
@@ -1617,7 +1510,7 @@ const plugin = (
 
 
   // ------------------------------------------------------------
-  // AUDIO
+  // AUDIO MAP
   // ------------------------------------------------------------
 
   args.push(
@@ -1637,16 +1530,30 @@ const plugin = (
       'copy'
     );
 
-  } else if (
+  }
+
+  else if (
     encoder === 'h264_qsv'
   ) {
+
+    /*
+     * KEIN:
+     *
+     * -hwaccel qsv
+     * -hwaccel_output_format qsv
+     *
+     * Die Quelle wird von der CPU dekodiert.
+     * QSV übernimmt ausschließlich das Encoding.
+     */
 
     args.push(
       '-c:v',
       'h264_qsv',
 
       '-global_quality',
-      String(qsvQuality),
+      String(
+        qsvQuality
+      ),
 
       '-preset',
       qsvPreset,
@@ -1655,7 +1562,9 @@ const plugin = (
       'nv12'
     );
 
-  } else if (
+  }
+
+  else if (
     encoder === 'h264_amf'
   ) {
 
@@ -1670,19 +1579,27 @@ const plugin = (
       'cqp',
 
       '-qp_i',
-      String(amfQP),
+      String(
+        amfQP
+      ),
 
       '-qp_p',
-      String(amfQP),
+      String(
+        amfQP
+      ),
 
       '-qp_b',
-      String(amfQP),
+      String(
+        amfQP
+      ),
 
       '-pix_fmt',
       'yuv420p'
     );
 
-  } else if (
+  }
+
+  else if (
     encoder === 'h264_nvenc'
   ) {
 
@@ -1691,7 +1608,9 @@ const plugin = (
       'h264_nvenc',
 
       '-cq',
-      String(amfQP),
+      String(
+        amfQP
+      ),
 
       '-pix_fmt',
       'yuv420p'
@@ -1707,6 +1626,15 @@ const plugin = (
     needsHDRConversion
   ) {
 
+    /*
+     * HDR -> SDR Pipeline:
+     *
+     * 1. PQ/HLG -> linear
+     * 2. Tonemap
+     * 3. linear -> BT.709
+     * 4. yuv420p
+     */
+
     args.push(
       '-vf',
 
@@ -1716,6 +1644,14 @@ const plugin = (
       'format=yuv420p'
     );
 
+
+    /*
+     * Ganz wichtig:
+     *
+     * Nach dem Tonemapping werden die
+     * Farbraum-Metadaten explizit auf SDR
+     * BT.709 gesetzt.
+     */
 
     args.push(
       '-color_primaries',
@@ -1759,12 +1695,13 @@ const plugin = (
       );
     }
 
-  } else {
+  }
+
+  else {
 
     /*
-     * Bereits AAC und passende Kanalzahl.
-     *
-     * Audio wird nicht erneut encodiert.
+     * Bereits AAC und Kanalzahl passt.
+     * Daher Audio nicht erneut encodieren.
      */
 
     args.push(
@@ -1774,9 +1711,9 @@ const plugin = (
   }
 
 
-  // ------------------------------------------------------------
+  // ============================================================
   // AUDIO METADATA
-  // ------------------------------------------------------------
+  // ============================================================
 
   args.push(
     '-metadata:s:a:0',
@@ -1794,19 +1731,9 @@ const plugin = (
   selectedSubtitles.forEach(
     (subtitle, idx) => {
 
-      const subtitleIndex =
-        subtitle.index !== undefined
-          ? Number(
-              subtitle.index
-            )
-          : streams.indexOf(
-              subtitle
-            );
-
-
       args.push(
         '-map',
-        `0:${subtitleIndex}`,
+        `0:${subtitle.index}`,
 
         `-c:s:${idx}`,
         'copy'
@@ -1910,18 +1837,20 @@ const plugin = (
 
 
   let info =
-    '========== CUSTOM H264 AAC 1.9.10 ==========\n';
+    '========== CUSTOM H264 AAC 1.9.11 ==========\n';
 
 
   info +=
     `Node Name: ${
-      currentNodeName || 'unknown'
+      currentNodeName ||
+      'unknown'
     }\n`;
 
 
   info +=
     `Tdarr nodeHardwareType: ${
-      rawNodeHardwareType || 'unknown'
+      rawNodeHardwareType ||
+      'unknown'
     }\n`;
 
 
@@ -1963,13 +1892,15 @@ const plugin = (
 
   info +=
     `Video profile: ${
-      videoProfile || 'unknown'
+      videoProfile ||
+      'unknown'
     }\n`;
 
 
   info +=
     `Pixel format: ${
-      pixelFormat || 'unknown'
+      pixelFormat ||
+      'unknown'
     }\n`;
 
 
@@ -1989,20 +1920,23 @@ const plugin = (
 
 
   info +=
-    `Target codec: ${
-      targetCodec
+    `Color transfer: ${
+      colorTransfer ||
+      'unknown'
     }\n`;
 
 
   info +=
-    `Video mode: ${
-      videoMode
+    `Color primaries: ${
+      colorPrimaries ||
+      'unknown'
     }\n`;
 
 
   info +=
-    `Needs video transcode: ${
-      needsVideoTranscode
+    `Color space: ${
+      colorSpace ||
+      'unknown'
     }\n`;
 
 
@@ -2032,9 +1966,23 @@ const plugin = (
     }\n`;
 
 
-  /*
-   * Absichtlich KEIN Hardware Decode.
-   */
+  info +=
+    `Video decision: ${
+      videoMode
+    }\n`;
+
+
+  info +=
+    `Target codec: ${
+      isTargetCodec
+    }\n`;
+
+
+  info +=
+    `Needs video transcode: ${
+      needsVideoTranscode
+    }\n`;
+
 
   info +=
     'Hardware decoder: NONE (CPU decode)\n';
@@ -2065,6 +2013,12 @@ const plugin = (
 
 
   info +=
+    `Audio decision: ${
+      audioMode
+    }\n`;
+
+
+  info +=
     `AAC bitrate: ${
       aacBitrate
     }\n`;
@@ -2077,42 +2031,27 @@ const plugin = (
 
 
   info +=
-    'Audio:\n';
+    'Audio streams:\n';
 
 
   info +=
-    `  German audio stream: ${
+    `German audio: source ${
       germanAudioIndex
-    }\n`;
-
-
-  info +=
-    `  Source codec: ${
-      germanAudioCodec || 'unknown'
-    }\n`;
-
-
-  info +=
-    `  Source channels: ${
+    } -> output audio:0, ` +
+    `${
+      germanAudioCodec
+    }, ` +
+    `${
       germanAudioChannels
-    }\n`;
-
-
-  info +=
-    `  Output channels: ${
+    } -> ` +
+    `${
       outputAudioChannels
-    }\n`;
+    } Kanäle\n`;
 
 
   info +=
-    `  Audio decision: ${
-      audioMode
-    }\n`;
-
-
-  info +=
-    `  Other audio removed: ${
-      hasOtherAudio
+    `Audio output map: -map 0:${
+      germanAudioIndex
     }\n`;
 
 
@@ -2123,14 +2062,8 @@ const plugin = (
 
 
   info +=
-    `Selected German subtitles: ${
+    `Selected subtitles: ${
       selectedSubtitles.length
-    }\n`;
-
-
-  info +=
-    `Unwanted subtitles present: ${
-      hasUnwantedSubtitle
     }\n`;
 
 
@@ -2149,24 +2082,6 @@ const plugin = (
   info +=
     `Chapters copied: ${
       copyChapters
-    }\n`;
-
-
-  info +=
-    `Container: ${
-      sourceContainer || 'unknown'
-    } -> mkv\n`;
-
-
-  info +=
-    `Needs container change: ${
-      needsContainerChange
-    }\n`;
-
-
-  info +=
-    `Needs stream cleanup: ${
-      needsStreamCleanup
     }\n`;
 
 
@@ -2195,7 +2110,7 @@ const plugin = (
 
 
 // ================================================================
-// EXPORT
+// EXPORTS
 // ================================================================
 
 module.exports.details =
